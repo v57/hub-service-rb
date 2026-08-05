@@ -1,0 +1,17 @@
+GEM
+  remote: https://rubygems.org/
+  specs:
+    iodine (0.7.58)
+    minitest (5.25.4)
+    oj (3.13.23)
+
+PLATFORMS
+  ruby
+
+DEPENDENCIES
+  iodine (= 0.7.58)
+  minitest (~> 5.20)
+  oj (= 3.13.23)
+
+BUNDLED WITH
+   1.17.2
