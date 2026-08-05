@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+$stdout.sync = true # keep logs visible when piped/backgrounded
+
 $LOAD_PATH.unshift(File.expand_path('../lib', __dir__))
 require 'hub_service_rb'
 
