@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+bundle install --path vendor/bundle >/dev/null
+
+bundle exec ruby -Ilib test/run_unit.rb

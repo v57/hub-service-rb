@@ -1,0 +1,6 @@
+# Bundler
+.bundle/
+vendor/bundle/
+
+# macOS
+.DS_Store
