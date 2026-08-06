@@ -2,3 +2,4 @@
 
 require 'minitest/autorun'
 require_relative 'test_service'
+require_relative 'test_keychain'

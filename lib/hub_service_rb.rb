@@ -1,7 +1,8 @@
 # frozen_string_literal: true
 
 # hub-service-rb: Ruby port of hub-service (TS reference).
-# Lite port: no auth, no keychain, no crypto (hub-pro territory).
+# Connects with hub-pro auth (keychain + signed tokens) when available;
+# hub-lite ignores the auth headers entirely (regression-safe).
 
 # channel-rb is a sibling checkout (no gemspec), wired via the monorepo layout.
 # If channel_rb is already available as a gem, the load path stays untouched.
@@ -12,6 +13,7 @@ end
 require 'thread'
 require 'channel_rb'
 require 'hub_service_rb/app'
+require 'hub_service_rb/keychain'
 
 module HubServiceRB
   # Raised when calling the hub before the service is started.
@@ -22,9 +24,13 @@ module HubServiceRB
     attr_reader :apps, :profile
 
     # options: :address (port or ws:// URL; default 1997 or $HUB), :name, :icon
-    # (string or {symbol:, text:}).
+    # (string or {symbol:, text:}), :sign (callable returning a fresh hub-pro
+    # auth token; default: the keychain +auth+ file in the cwd, TS parity).
     def initialize(options = {})
-      @address = options[:address] || ENV['HUB'] || 1997
+      hub = ENV['HUB']
+      hub = hub&.match?(/\A\d+\z/) ? hub.to_i : hub
+      @address = options[:address] || hub || 1997
+      @sign = options[:sign] || -> { HubServiceRB::Keychain.sign }
       profile = {}
       profile[:name] = options[:name] if options[:name]
       profile[:icon] = options[:icon] unless options[:icon].nil?
@@ -77,12 +83,16 @@ module HubServiceRB
 
     # Connect to the hub. On every (re)connect: hub/profile/update (if a
     # profile is set), then hub/service/update with the current services+apps
-    # (the hub drops a sender's services on disconnect).
+    # (the hub drops a sender's services on disconnect). Each (re)connect
+    # also carries fresh hub-pro auth headers ({auth: <signed token>, v: '0'})
+    # — the client URL-encodes them as query params on the ws:// handshake.
     def start
       @mutex.synchronize do
         return self if @sender
 
-        @sender = @channel.connect(@address, on_connect: proc { |s| send_updates(s) })
+        @sender = @channel.connect(@address,
+                                   on_connect: proc { |s| send_updates(s) },
+                                   headers: -> { auth_headers })
       end
       self
     end
@@ -115,6 +125,15 @@ module HubServiceRB
     def send_updates(s)
       send_untracked(s, 'hub/profile/update', @profile) if @profile
       send_untracked(s, 'hub/service/update', update)
+    end
+
+    # Fresh hub-pro auth headers for every (re)connect: a freshly signed
+    # token + protocol version (TS reference parity). The channel client
+    # calls this once per connection attempt (initial + reconnects) and
+    # URL-encodes the values as ws:// query params; the hub reads query
+    # params as headers. hub-lite ignores them (regression-safe).
+    def auth_headers
+      { 'auth' => @sign.call.to_s, 'v' => '0' }
     end
 
     # Fire-and-forget send. on_connect runs on the iodine event-loop thread,

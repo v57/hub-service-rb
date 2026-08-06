@@ -2,5 +2,8 @@
 .bundle/
 vendor/bundle/
 
+# hub-pro keychain (TS parity: auth file in cwd is gitignored)
+auth
+
 # macOS
 .DS_Store
