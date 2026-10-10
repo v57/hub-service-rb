@@ -130,8 +130,8 @@ module HubServiceRB
     # Fresh hub-pro auth headers for every (re)connect: a freshly signed
     # token + protocol version (TS reference parity). The channel client
     # calls this once per connection attempt (initial + reconnects) and
-    # URL-encodes the values as ws:// query params; the hub reads query
-    # params as headers. hub-lite ignores them (regression-safe).
+    # sends them as real WebSocket handshake headers (never in the URL).
+    # hub-lite ignores them (regression-safe).
     def auth_headers
       { 'auth' => @sign.call.to_s, 'v' => '0' }
     end
