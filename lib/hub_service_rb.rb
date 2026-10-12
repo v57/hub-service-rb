@@ -7,7 +7,7 @@
 # channel-rb is a sibling checkout (no gemspec), wired via the monorepo layout.
 # If channel_rb is already available as a gem, the load path stays untouched.
 unless $LOAD_PATH.any? { |p| p.end_with?('/channel-rb/lib') }
-  $LOAD_PATH.unshift(File.expand_path('../../channel-rb/lib', __dir__))
+  $LOAD_PATH.unshift(File.expand_path('../../../Channel/channel-rb/lib', __dir__))
 end
 
 require 'thread'
