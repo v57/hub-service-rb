@@ -45,16 +45,17 @@ class TestCaller < Minitest::Test
           plain: sender.send('echo', 'hi', CONTEXT),
           lambda: sender.send('upper', 'hi', CONTEXT),
           stream: sender.values('whoami/values', nil, CONTEXT).to_a,
-          anonymous: sender.send('whoami', 'hi', {})
+          anonymous: sender.send('whoami', 'hi', 'service' => 'x'),
+          spoofed: sender.send('whoami', 'hi', 'hub' => CONTEXT['hub'].merge('hubKey' => 'OTHER'))
         }
       rescue StandardError => e
         results << { error: e.message }
       end
     end
-    service = HubServiceRB::Service.new(address: FakeHub.port, hub_key: FakeHub::HUB_KEY)
+    service = HubServiceRB::Service.new(address: FakeHub.port, hub_key: CONTEXT['hub']['hubKey'])
     service.post('whoami') do |body, request|
       caller = request.caller || Caller.new
-      [body, caller.key, caller.owner == true, request.hub_key]
+      [body, caller.key, caller.owner == true, request.context.keys.sort]
     end
     service.post('echo') { |body| body }
     service.post('upper', &->(body) { body.upcase })
@@ -62,11 +63,13 @@ class TestCaller < Minitest::Test
     service.start
     result = Timeout.timeout(5) { results.pop }
     refute result.key?(:error), result[:error]
-    assert_equal ['hi', CONTEXT['hub']['caller']['key'], true, CONTEXT['hub']['hubKey']], result[:post]
+    assert_equal ['hi', CONTEXT['hub']['caller']['key'], true, []], result[:post]
     assert_equal 'hi', result[:plain]
     assert_equal 'HI', result[:lambda]
     assert_equal ['Mac Studio'], result[:stream]
-    assert_equal ['hi', nil, false, nil], result[:anonymous]
+    assert_equal ['hi', nil, false, ['service']], result[:anonymous]
+    # A caller is trusted only from the pinned hub.
+    assert_equal ['hi', nil, false, []], result[:spoofed]
   ensure
     FakeHub.on_update = nil
     service&.instance_variable_get(:@sender)&.stop

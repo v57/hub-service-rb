@@ -72,9 +72,10 @@ service.values('echo/values', 'x').each { |v| p v }
   endpoint; the block must return an enumerable of values
 - Either block may name a second argument, a `HubServiceRB::Request`:
   `request.caller` (`Caller`: `key`, `device` (`id`, `name`), `groups`,
-  `owner`, `via`, `claimed`; nil when the hub sends none), `request.hub_key`,
-  `request.context`, `request.path`. The hub fills `context.hub`, so a
-  service can trust it.
+  `owner`, `via`, `claimed`), `request.context` (without `hub`),
+  `request.path`. The caller is nil unless `context.hub.hubKey` is the
+  pinned hub key: a hub that predates caller identity may pass a client's
+  `context.hub` through.
 - `#app(App) -> self` — appends the header to the apps list and streams the
   AppInterface at the app path
 - `#send(path, body = nil, context = nil)` — client call through the hub

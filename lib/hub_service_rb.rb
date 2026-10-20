@@ -138,14 +138,22 @@ module HubServiceRB
       HubPins.new(File.join(File.dirname(HubServiceRB::Keychain.key_path), 'hubs.json'))
     end
 
-    # The hub key this service signs for: supplied, else pinned.
+    # The hub key this service signs for: supplied, else pinned. The pin is
+    # read from hubs.json at each connect and kept in memory.
     def hub_key
-      @hub_key || pins.get(target)
+      return @hub_key if @hub_key
+
+      unless @pin_loaded
+        @pinned = pins.get(target)
+        @pin_loaded = true
+      end
+      @pinned
     end
 
     # Clear the pinned hub key; the next connect learns it again (v0).
     def forget_hub_key
       @hub_key = nil
+      @pinned = nil
       pins.forget(target)
     end
 
@@ -156,6 +164,7 @@ module HubServiceRB
     # A refused v1 connect (the hub key changed or a different server
     # answers) keeps retrying with v1; there is no silent v0 fallback.
     def auth_headers
+      @pin_loaded = false # pick up a pin another process wrote
       key = @sign_takes_hub_key ? hub_key : nil
       token = (@sign_takes_hub_key ? @sign.call(key) : @sign.call).to_s
       headers = { 'auth' => token, 'v' => key ? '1' : '0' }
@@ -193,7 +202,7 @@ module HubServiceRB
       if handler.lambda? && handler.arity.between?(0, 1)
         handler.call(payload[:body])
       else
-        handler.call(payload[:body], Request.from_payload(payload))
+        handler.call(payload[:body], Request.from_payload(payload, hub_key))
       end
     end
 
@@ -222,6 +231,8 @@ module HubServiceRB
           key = info.is_a?(Hash) ? (info['key'] || info[:key]) : nil
           if key.is_a?(String) && !key.empty? && hub_key.nil?
             pins.set(target, key)
+            @pinned = key
+            @pin_loaded = true
             @sender&.ws&.instance_variable_get(:@connection)&.close
           end
         rescue StandardError, Timeout::Error

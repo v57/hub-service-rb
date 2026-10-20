@@ -29,16 +29,16 @@ module HubServiceRB
     end
   end
 
-  # What a two-argument handler gets next to the body: the caller (nil when
-  # the hub sent none, e.g. hub-lite), the forwarding hub's key, the full
-  # request context and the called path.
-  Request = Struct.new(:caller, :hub_key, :context, :path) do
-    def self.from_payload(payload)
-      context = payload[:context].is_a?(Hash) ? payload[:context] : {}
-      hub = read(context, 'hub')
-      hub = {} unless hub.is_a?(Hash)
-      hub_key = read(hub, 'hubKey')
-      new(Caller.parse(read(hub, 'caller')), hub_key.is_a?(String) ? hub_key : nil, context, payload[:path])
+  # What a two-argument handler gets next to the body: the caller, the
+  # request context without +hub+, and the called path. The caller is nil
+  # unless the hub that forwarded the request is the pinned hub: a hub that
+  # predates caller identity may pass a client's context.hub through.
+  Request = Struct.new(:caller, :context, :path) do
+    def self.from_payload(payload, hub_key)
+      context = payload[:context].is_a?(Hash) ? payload[:context].dup : {}
+      hub = context.delete('hub') || context.delete(:hub)
+      trusted = hub.is_a?(Hash) && hub_key && read(hub, 'hubKey') == hub_key
+      new(trusted ? Caller.parse(read(hub, 'caller')) : nil, context, payload[:path])
     end
 
     # Read a JSON key whether the hash has string or symbol keys.
