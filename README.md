@@ -70,6 +70,11 @@ service.values('echo/values', 'x').each { |v| p v }
   block's return value is the response
 - `#stream(path, settings = nil) { |body| ... }` — registers a streaming
   endpoint; the block must return an enumerable of values
+- Either block may name a second argument, a `HubServiceRB::Request`:
+  `request.caller` (`Caller`: `key`, `device` (`id`, `name`), `groups`,
+  `owner`, `via`, `claimed`; nil when the hub sends none), `request.hub_key`,
+  `request.context`, `request.path`. The hub fills `context.hub`, so a
+  service can trust it.
 - `#app(App) -> self` — appends the header to the apps list and streams the
   AppInterface at the app path
 - `#send(path, body = nil, context = nil)` — client call through the hub

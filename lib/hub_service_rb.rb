@@ -18,6 +18,7 @@ require 'channel_rb'
 require 'hub_service_rb/app'
 require 'hub_service_rb/keychain'
 require 'hub_service_rb/device'
+require 'hub_service_rb/request'
 
 module HubServiceRB
   # Raised when calling the hub before the service is started.
@@ -61,18 +62,21 @@ module HubServiceRB
     end
 
     # Register a request/response API endpoint. The handler receives the
-    # request body and its return value is the response.
+    # request body and its return value is the response. A block (or a
+    # lambda taking two arguments) also gets the Request: +request.caller+
+    # is who is calling.
     def post(path, settings = nil, &handler)
       add_path(path, settings)
-      @channel.post(path) { |payload| handler.call(payload[:body]) }
+      @channel.post(path) { |payload| call_handler(handler, payload) }
       self
     end
 
     # Register a streaming API endpoint. The handler receives the request body
-    # and must return an enumerable of values (Enumerator, Array, ...).
+    # (and the Request, as in post) and must return an enumerable of values
+    # (Enumerator, Array, ...).
     def stream(path, settings = nil, &handler)
       add_path(path, settings)
-      @channel.stream(path) { |payload| handler.call(payload[:body]) }
+      @channel.stream(path) { |payload| call_handler(handler, payload) }
       self
     end
 
@@ -181,6 +185,16 @@ module HubServiceRB
     end
 
     private
+
+    # Blocks drop arguments they don't name, so +{ |body| }+ keeps working;
+    # a one-argument lambda gets the body alone.
+    def call_handler(handler, payload)
+      if handler.lambda? && handler.arity.between?(0, 1)
+        handler.call(payload[:body])
+      else
+        handler.call(payload[:body], Request.from_payload(payload))
+      end
+    end
 
     def sender
       @mutex.synchronize do
