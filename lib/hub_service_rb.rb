@@ -2,7 +2,9 @@
 
 # hub-service-rb: Ruby port of hub-service (TS reference).
 # Connects with hub-pro auth (keychain + signed tokens) when available;
-# hub-lite ignores the auth headers entirely (regression-safe).
+# hub-lite ignores the auth headers entirely (regression-safe). Auth follows
+# Docs/Devices/protocol.md: v0 tokens until the hub key is pinned from
+# hub/info, hub-bound v1 tokens after that.
 
 # channel-rb is a sibling checkout (no gemspec), wired via the monorepo layout.
 # If channel_rb is already available as a gem, the load path stays untouched.
@@ -11,6 +13,7 @@ unless $LOAD_PATH.any? { |p| p.end_with?('/channel-rb/lib') }
 end
 
 require 'thread'
+require 'timeout'
 require 'channel_rb'
 require 'hub_service_rb/app'
 require 'hub_service_rb/keychain'
@@ -25,12 +28,18 @@ module HubServiceRB
 
     # options: :address (port or ws:// URL; default 1997 or $HUB), :name, :icon
     # (string or {symbol:, text:}), :sign (callable returning a fresh hub-pro
-    # auth token; default: the keychain +auth+ file in the cwd, TS parity).
+    # auth token; default: the keychain +auth+ file in the cwd, TS parity. A
+    # callable that takes an argument gets the pinned hub key, or nil, and
+    # must sign v1 when it is set; one without arguments always sends v0),
+    # :hub_key (the hub's key when known up front; otherwise it is learned
+    # from hub/info and pinned).
     def initialize(options = {})
       hub = ENV['HUB']
       hub = hub&.match?(/\A\d+\z/) ? hub.to_i : hub
       @address = options[:address] || hub || 1997
-      @sign = options[:sign] || -> { HubServiceRB::Keychain.sign }
+      @sign = options[:sign] || ->(hub_key = nil) { HubServiceRB::Keychain.sign(hub_key: hub_key) }
+      @sign_takes_hub_key = @sign.arity != 0
+      @hub_key = options[:hub_key]
       profile = {}
       profile[:name] = options[:name] if options[:name]
       profile[:icon] = options[:icon] unless options[:icon].nil?
@@ -97,6 +106,39 @@ module HubServiceRB
       self
     end
 
+    # The hubs.json pin key for this hub.
+    def target
+      HubServiceRB::Keychain.pin_address(@address)
+    end
+
+    # Pinned hub keys: +hubs.json+ beside the service key file.
+    def pins
+      HubPins.new(File.join(File.dirname(HubServiceRB::Keychain.key_path), 'hubs.json'))
+    end
+
+    # The hub key this service signs for: supplied, else pinned.
+    def hub_key
+      @hub_key || pins.get(target)
+    end
+
+    # Clear the pinned hub key; the next connect learns it again (v0).
+    def forget_hub_key
+      @hub_key = nil
+      pins.forget(target)
+    end
+
+    # Fresh hub-pro auth headers for every (re)connect: a freshly signed
+    # token + protocol version. The channel client calls this once per
+    # connection attempt (initial + reconnects) and sends them as real
+    # WebSocket handshake headers (never in the URL). hub-lite ignores them.
+    # A refused v1 connect (the hub key changed or a different server
+    # answers) keeps retrying with v1; there is no silent v0 fallback.
+    def auth_headers
+      key = @sign_takes_hub_key ? hub_key : nil
+      token = @sign_takes_hub_key ? @sign.call(key) : @sign.call
+      { 'auth' => token.to_s, 'v' => key ? '1' : '0' }
+    end
+
     # Build the current hub/service/update payload:
     # { services: [{path:, permissions?, limit?}...] (sorted by path), apps: [...] }
     def update
@@ -125,15 +167,26 @@ module HubServiceRB
     def send_updates(s)
       send_untracked(s, 'hub/profile/update', @profile) if @profile
       send_untracked(s, 'hub/service/update', update)
+      learn_hub_key(s) if @sign_takes_hub_key && hub_key.nil?
     end
 
-    # Fresh hub-pro auth headers for every (re)connect: a freshly signed
-    # token + protocol version (TS reference parity). The channel client
-    # calls this once per connection attempt (initial + reconnects) and
-    # sends them as real WebSocket handshake headers (never in the URL).
-    # hub-lite ignores them (regression-safe).
-    def auth_headers
-      { 'auth' => @sign.call.to_s, 'v' => '0' }
+    # Pin the hub key from hub/info, then reconnect with v1 at once. Runs on
+    # its own thread: on_connect is on the iodine loop, where waiting for a
+    # response would deadlock. hub-lite doesn't answer hub/info, so the
+    # service stays on v0 there.
+    def learn_hub_key(s)
+      Thread.new do
+        begin
+          info = Timeout.timeout(10) { s.send('hub/info') }
+          key = info.is_a?(Hash) ? (info['key'] || info[:key]) : nil
+          if key.is_a?(String) && !key.empty? && hub_key.nil?
+            pins.set(target, key)
+            @sender&.ws&.instance_variable_get(:@connection)&.close
+          end
+        rescue StandardError, Timeout::Error
+          nil
+        end
+      end
     end
 
     # Fire-and-forget send. on_connect runs on the iodine event-loop thread,

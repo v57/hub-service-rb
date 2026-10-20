@@ -65,7 +65,7 @@ class TestKeychain < Minitest::Test
     assert_match(/\A[A-Za-z0-9+\/=]+\z/, parts[2], 'sig must be base64')
     assert_equal 88, parts[2].bytesize, 'sig is base64 of the 64-byte ed25519 signature'
     assert_match(/\A\d+\z/, parts[3], 'expiry must be a decimal string')
-    assert_includes (Time.now.to_i + 8)..(Time.now.to_i + 12), parts[3].to_i
+    assert_includes (Time.now.to_i + 58)..(Time.now.to_i + 62), parts[3].to_i
   end
 
   def test_signature_verifies_against_embedded_public_key
