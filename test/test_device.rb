@@ -73,12 +73,19 @@ class TestDevice < Minitest::Test
   end
 
   def test_instance_defaults
-    assert_equal 'Echo', HubServiceRB::Service.new(name: 'Echo').instance
-    service = HubServiceRB::Service.new
-    assert_equal 'service', service.instance
-    service.post('s3/read') { |body| body }
-    service.post('echo') { |body| body }
-    assert_equal 's3', service.instance
+    saved = ENV.delete('HUB_INSTANCE')
+    work = File.join(@dir, 's3-local')
+    Dir.mkdir(work)
+    Dir.chdir(work) do
+      assert_equal 's3-local', HubServiceRB::Service.new.instance
+      assert_equal 'Echo', HubServiceRB::Service.new(name: 'Echo').instance
+      ENV['HUB_INSTANCE'] = 's3-local/Backup Disk'
+      assert_equal 's3-local/Backup Disk', HubServiceRB::Service.new(name: 'Echo').instance
+      assert_equal 'mine', HubServiceRB::Service.new(instance: 'mine').instance
+      assert_equal 'é' * 64, HubServiceRB::Service.new(instance: 'é' * 100).instance
+    end
+  ensure
+    ENV['HUB_INSTANCE'] = saved
   end
 
   def test_instance_length_checked

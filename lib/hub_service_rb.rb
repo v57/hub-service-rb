@@ -35,8 +35,8 @@ module HubServiceRB
     # must sign v1 when it is set; one without arguments always sends v0),
     # :hub_key (the hub's key when known up front; otherwise it is learned
     # from hub/info and pinned), :instance (this service's name on its
-    # device, unique per device; default: :name, else the first segment of
-    # the first registered path, else 'service'), :device (true, the
+    # device, unique per device; default: HUB_INSTANCE, else :name, else the
+    # cwd name, else 'service'), :device (true, the
     # default, certifies the service with this device's key when it can be
     # read or created; false sends no device header; a Device uses that one).
     def initialize(options = {})
@@ -118,13 +118,14 @@ module HubServiceRB
       self
     end
 
-    # The instance name sent in the certificate.
+    # The instance name sent in the certificate: the option, else
+    # HUB_INSTANCE (the launcher sets it), else the name, else the cwd name,
+    # else 'service'; at most 128 UTF-8 bytes.
     def instance
-      return @instance if @instance && !@instance.empty?
-      return @profile[:name] if @profile && @profile[:name] && !@profile[:name].to_s.empty?
-
-      first = @mutex.synchronize { @paths.keys.first }
-      first ? first.split('/').first : 'service'
+      name = [@instance, ENV['HUB_INSTANCE'], @profile && @profile[:name], File.basename(Dir.pwd)]
+             .map(&:to_s).find { |value| !value.empty? } || 'service'
+      name = name.byteslice(0, 128).scrub('')
+      name.empty? ? 'service' : name
     end
 
     # The hubs.json pin key for this hub.
