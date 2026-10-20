@@ -7,9 +7,9 @@ Ruby port of [hub-service](https://github.com/v57/hub-service) — connect to a
 [hub](https://github.com/v57/hub-lite) (default `ws://127.0.0.1:1997`), host
 your own post/stream API endpoints, register apps, and call API through the hub.
 
-Lite port: no auth, no keychain, no crypto (hub-pro territory). The wire
-contract matches the TS reference (`hub/profile/update`, `hub/service/update`,
-AppInterface + element DSL).
+The wire contract matches the TS reference (`hub/profile/update`,
+`hub/service/update`, AppInterface + element DSL). Auth and devices follow
+[`Docs/Devices/protocol.md`](../../Docs/Devices/protocol.md).
 
 ## Install
 
@@ -86,6 +86,20 @@ missing (TS parity).
 Element helpers (`lib/hub_service_rb/app.rb`): `text`, `progress`, `text_field`,
 `button`, `slider`, `list`, `picker`, `cell`, `files`, `file_operation`,
 `hstack`, `vstack`, `zstack`, `spacer`, `action`.
+
+## Auth and devices
+
+- **Service key:** the `auth` file in the cwd (or `$HUBKEY`, TS layout), sent
+  as a signed `auth` token on every connect.
+- **Hub key:** the first connect uses `v: 0` and calls `hub/info`; the hub key
+  is pinned in `hubs.json` beside the `auth` file and later connects sign
+  `hub1:<hub key>:<expiry>` with `v: 1`. hub-lite stays on v0. `:hub_key`
+  supplies it up front and `#forget_hub_key` clears the pin.
+- **Device:** a certificate signed by `~/.hub/device.key` (`HUB_DEVICE_KEY`
+  overrides it) goes in the `device` header and is renewed with less than a
+  day left. `:instance` sets the instance name and `device: false` turns
+  device mode off; `HubServiceRB::Device.new(name:, platform:, parent:, key:)`
+  overrides the defaults.
 
 ## Test
 

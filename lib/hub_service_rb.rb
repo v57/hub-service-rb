@@ -17,6 +17,7 @@ require 'timeout'
 require 'channel_rb'
 require 'hub_service_rb/app'
 require 'hub_service_rb/keychain'
+require 'hub_service_rb/device'
 
 module HubServiceRB
   # Raised when calling the hub before the service is started.
@@ -24,7 +25,7 @@ module HubServiceRB
 
   # Service registers API endpoints on a hub and serves calls forwarded by it.
   class Service
-    attr_reader :apps, :profile
+    attr_reader :apps, :profile, :device
 
     # options: :address (port or ws:// URL; default 1997 or $HUB), :name, :icon
     # (string or {symbol:, text:}), :sign (callable returning a fresh hub-pro
@@ -32,7 +33,11 @@ module HubServiceRB
     # callable that takes an argument gets the pinned hub key, or nil, and
     # must sign v1 when it is set; one without arguments always sends v0),
     # :hub_key (the hub's key when known up front; otherwise it is learned
-    # from hub/info and pinned).
+    # from hub/info and pinned), :instance (this service's name on its
+    # device, unique per device; default: :name, else the first segment of
+    # the first registered path, else 'service'), :device (true, the
+    # default, certifies the service with this device's key when it can be
+    # read or created; false sends no device header; a Device uses that one).
     def initialize(options = {})
       hub = ENV['HUB']
       hub = hub&.match?(/\A\d+\z/) ? hub.to_i : hub
@@ -40,6 +45,9 @@ module HubServiceRB
       @sign = options[:sign] || ->(hub_key = nil) { HubServiceRB::Keychain.sign(hub_key: hub_key) }
       @sign_takes_hub_key = @sign.arity != 0
       @hub_key = options[:hub_key]
+      @instance = options[:instance]
+      device = options.fetch(:device, true)
+      @device = device.is_a?(Device) ? device : (device ? Device.new : nil)
       profile = {}
       profile[:name] = options[:name] if options[:name]
       profile[:icon] = options[:icon] unless options[:icon].nil?
@@ -106,6 +114,15 @@ module HubServiceRB
       self
     end
 
+    # The instance name sent in the certificate.
+    def instance
+      return @instance if @instance && !@instance.empty?
+      return @profile[:name] if @profile && @profile[:name] && !@profile[:name].to_s.empty?
+
+      first = @mutex.synchronize { @paths.keys.first }
+      first ? first.split('/').first : 'service'
+    end
+
     # The hubs.json pin key for this hub.
     def target
       HubServiceRB::Keychain.pin_address(@address)
@@ -135,8 +152,17 @@ module HubServiceRB
     # answers) keeps retrying with v1; there is no silent v0 fallback.
     def auth_headers
       key = @sign_takes_hub_key ? hub_key : nil
-      token = @sign_takes_hub_key ? @sign.call(key) : @sign.call
-      { 'auth' => token.to_s, 'v' => key ? '1' : '0' }
+      token = (@sign_takes_hub_key ? @sign.call(key) : @sign.call).to_s
+      headers = { 'auth' => token, 'v' => key ? '1' : '0' }
+      if @device
+        begin
+          # The certificate names the key in the token, whoever signed it.
+          headers['device'] = @device.certificate(token.split('.')[1], instance)
+        rescue StandardError
+          nil # no readable or creatable device key: a plain key connection
+        end
+      end
+      headers
     end
 
     # Build the current hub/service/update payload:
