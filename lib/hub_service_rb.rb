@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 # hub-service-rb: Ruby port of hub-service (TS reference).
-# Connects with hub-pro auth (keychain + signed tokens) when available;
+# Connects with hub-server auth (keychain + signed tokens) when available;
 # hub-lite ignores the auth headers entirely (regression-safe). Auth follows
 # Docs/Devices/protocol.md: v0 tokens until the hub key is pinned from
 # hub/info, hub-bound v1 tokens after that.
@@ -30,7 +30,7 @@ module HubServiceRB
     attr_reader :apps, :profile, :device, :network
 
     # options: :address (port or ws:// URL; default 1997 or $HUB), :name, :icon
-    # (string or {symbol:, text:}), :sign (callable returning a fresh hub-pro
+    # (string or {symbol:, text:}), :sign (callable returning a fresh hub-server
     # auth token; default: the keychain +auth+ file in the cwd, TS parity. A
     # callable that takes an argument gets the pinned hub key, or nil, and
     # must sign v1 when it is set; one without arguments always sends v0),
@@ -111,7 +111,7 @@ module HubServiceRB
     # Connect to the hub. On every (re)connect: hub/profile/update (if a
     # profile is set), then hub/service/update with the current services+apps
     # (the hub drops a sender's services on disconnect). Each (re)connect
-    # also carries fresh hub-pro auth headers ({auth: <signed token>, v: '0'})
+    # also carries fresh hub-server auth headers ({auth: <signed token>, v: '0'})
     # — the client URL-encodes them as query params on the ws:// handshake.
     def start
       @mutex.synchronize do
@@ -163,7 +163,7 @@ module HubServiceRB
       pins.forget(target)
     end
 
-    # Fresh hub-pro auth headers for every (re)connect: a freshly signed
+    # Fresh hub-server auth headers for every (re)connect: a freshly signed
     # token + protocol version. The channel client calls this once per
     # connection attempt (initial + reconnects) and sends them as real
     # WebSocket handshake headers (never in the URL). hub-lite ignores them.

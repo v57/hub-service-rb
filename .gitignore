@@ -2,7 +2,7 @@
 .bundle/
 vendor/bundle/
 
-# hub-pro keychain (TS parity: auth file in cwd is gitignored)
+# hub-server keychain (TS parity: auth file in cwd is gitignored)
 auth
 
 # macOS

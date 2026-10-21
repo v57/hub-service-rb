@@ -10,7 +10,7 @@ require 'hub_service_rb/keychain'
 # Keychain unit tests: token shape, signature verification, auth file
 # round-trip, and TS-generated auth file parity (hub-pro-support contract).
 class TestKeychain < Minitest::Test
-  # TS-generated test key (owner key from the hub-pro test env) and its
+  # TS-generated test key (owner key from the hub-server test env) and its
   # public key (hub-service/keychain.ts parity).
   TS_TEST_AUTH = 'MC4CAQAwBQYDK2VwBCIEINguo0cc0FACJ0oRV3V/+ZqIyj04ON5wdMJGH4a/do8CMCowBQYDK2VwAyEAHZSDpmbLRjLrOyNMugsStFqK5EYcNluUekE4di+FalQ='
   TS_TEST_PUB = 'MCowBQYDK2VwAyEAHZSDpmbLRjLrOyNMugsStFqK5EYcNluUekE4di+FalQ='
