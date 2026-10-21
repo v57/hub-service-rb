@@ -18,8 +18,16 @@ module FakeHub
       @mutex.synchronize { @headers.dup }
     end
 
+    # network/shares/replace bodies received.
+    def replaced
+      @mutex.synchronize { @replaced.dup }
+    end
+
     def reset
-      @mutex.synchronize { @headers = [] }
+      @mutex.synchronize do
+        @headers = []
+        @replaced = []
+      end
       @lite = false
       @on_update = nil
     end
@@ -39,6 +47,15 @@ module FakeHub
         { key: HUB_KEY, protocol: 1, pro: true, mode: 'default-allow' }
       end
       channel.post('hub/profile/update') { nil }
+      channel.post('network/shares/replace') do |payload|
+        body = payload[:body]
+        @mutex.synchronize { @replaced << body }
+        { 'shares' => body['shares'].map do |share|
+          { 'version' => 1, 'resourceId' => "hnr1_#{share['name']}", 'authority' => "#{share['name']}.hub.invalid",
+            'providerId' => 'provider', 'protocol' => share['protocol'], 'overlayAddress' => '100.96.0.2',
+            'port' => share['target']['port'] }
+        end }
+      end
       channel.post('hub/service/update') do |payload|
         callback = FakeHub.on_update
         Thread.new { callback.call(payload[:sender]) } if callback

@@ -73,6 +73,12 @@ module HubServiceRB
         token(key_bytes, Time.now.to_i + expires, hub_key)
       end
 
+      # The base64 signature of +data+ with the service key (agent challenges
+      # for Hub Network shares).
+      def sign_data(data)
+        Base64.strict_encode64(signing_key_for(key_bytes).sign(data))
+      end
+
       # An auth token for an exact expiry from key file bytes.
       def token(bytes, expiry, hub_key = nil)
         data = hub_key ? "hub1:#{hub_key}:#{expiry}" : expiry.to_s

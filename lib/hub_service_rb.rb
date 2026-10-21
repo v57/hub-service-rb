@@ -19,6 +19,7 @@ require 'hub_service_rb/app'
 require 'hub_service_rb/keychain'
 require 'hub_service_rb/device'
 require 'hub_service_rb/request'
+require 'hub_service_rb/network'
 
 module HubServiceRB
   # Raised when calling the hub before the service is started.
@@ -26,7 +27,7 @@ module HubServiceRB
 
   # Service registers API endpoints on a hub and serves calls forwarded by it.
   class Service
-    attr_reader :apps, :profile, :device
+    attr_reader :apps, :profile, :device, :network
 
     # options: :address (port or ws:// URL; default 1997 or $HUB), :name, :icon
     # (string or {symbol:, text:}), :sign (callable returning a fresh hub-pro
@@ -38,7 +39,9 @@ module HubServiceRB
     # device, unique per device; default: HUB_INSTANCE, else :name, else the
     # cwd name, else 'service'), :device (true, the
     # default, certifies the service with this device's key when it can be
-    # read or created; false sends no device header; a Device uses that one).
+    # read or created; false sends no device header; a Device uses that one),
+    # :sign_challenge (signs Hub Network agent challenges with the service
+    # key; default: the keychain +auth+ file).
     def initialize(options = {})
       hub = ENV['HUB']
       hub = hub&.match?(/\A\d+\z/) ? hub.to_i : hub
@@ -49,6 +52,9 @@ module HubServiceRB
       @instance = options[:instance]
       device = options.fetch(:device, true)
       @device = device.is_a?(Device) ? device : (device ? Device.new : nil)
+      @sign_challenge = options[:sign_challenge] || ->(data) { HubServiceRB::Keychain.sign_data(data) }
+      # Hub Network shares; the agent socket is network.agent_socket.
+      @network = Network::Publisher.new
       profile = {}
       profile[:name] = options[:name] if options[:name]
       profile[:icon] = options[:icon] unless options[:icon].nil?
@@ -168,6 +174,7 @@ module HubServiceRB
       key = @sign_takes_hub_key ? hub_key : nil
       token = (@sign_takes_hub_key ? @sign.call(key) : @sign.call).to_s
       headers = { 'auth' => token, 'v' => key ? '1' : '0' }
+      @service_key = token.split('.')[1]
       if @device
         begin
           # The certificate names the key in the token, whoever signed it.
@@ -177,6 +184,48 @@ module HubServiceRB
         end
       end
       headers
+    end
+
+    # The key this service connects with (the key in its auth token).
+    def service_key
+      @service_key || HubServiceRB::Keychain.public_key
+    end
+
+    # Declare a Hub Network share before start: the declared set is published
+    # on connect and after every reconnect. Default policy: private.
+    def share(name, protocol, host, port, policy = nil)
+      @network.declare_share(share_hash(name, protocol, host, port, policy))
+      self
+    end
+
+    # Publish a local TCP/UDP port through Hub Network; returns every
+    # publication ({'resourceId', 'authority', 'overlayAddress', 'port', ...}).
+    def publish_share(name, protocol, host, port, policy = nil)
+      @network.publish_share(share_hash(name, protocol, host, port, policy), service_key, @sign_challenge, sender)
+    end
+
+    # Change a share's policy or target port and republish it.
+    def update_share(name, policy: nil, port: nil)
+      current = @network.declared_shares.find { |s| s['name'] == name }
+      raise KeyError, "Share '#{name}' not found" unless current
+
+      updated = current.dup
+      updated['policy'] = JSON.parse(JSON.generate(policy)) if policy
+      updated['target'] = current['target'].merge('port' => port) if port
+      @network.publish_share(updated, service_key, @sign_challenge, sender)
+    end
+
+    # Remove a share from Hub Network.
+    def remove_share(name)
+      @network.remove_share(name, service_key, @sign_challenge, sender)
+    end
+
+    def share_publications
+      @network.publications
+    end
+
+    def share_publication(name)
+      @network.publication(name)
     end
 
     # Build the current hub/service/update payload:
@@ -218,6 +267,24 @@ module HubServiceRB
       send_untracked(s, 'hub/profile/update', @profile) if @profile
       send_untracked(s, 'hub/service/update', update)
       learn_hub_key(s) if @sign_takes_hub_key && hub_key.nil?
+      republish(s) if @network.shares?
+    end
+
+    # Republish the declared shares on their own thread (on_connect runs on
+    # the iodine loop, where waiting for a response would deadlock).
+    def republish(s)
+      Thread.new do
+        begin
+          @network.republish_all(service_key, @sign_challenge, s)
+        rescue StandardError => e
+          warn "Failed to republish network shares: #{e.message}"
+        end
+      end
+    end
+
+    def share_hash(name, protocol, host, port, policy)
+      { 'name' => name, 'protocol' => protocol.to_s, 'target' => { 'host' => host, 'port' => port },
+        'policy' => policy ? JSON.parse(JSON.generate(policy)) : { 'mode' => 'private' } }
     end
 
     # Pin the hub key from hub/info, then reconnect with v1 at once. Runs on
