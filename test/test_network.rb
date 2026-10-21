@@ -100,7 +100,7 @@ class TestNetwork < Minitest::Test
     @service = HubServiceRB::Service.new(address: FakeHub.port, hub_key: FakeHub::HUB_KEY, device: false)
     @service.network.agent_socket = @socket
     @service.share('s3', 'tcp', '127.0.0.1', 9001, mode: 'hub').start
-    100.times { break unless FakeHub.replaced.empty?; sleep 0.02 }
+    100.times { break if @service.share_publication('s3'); sleep 0.02 }
     wire = FakeHub.replaced.first['shares'].first
     assert_equal ['s3', 1, { 'mode' => 'hub' }], [wire['name'], wire['version'], wire['policy']]
     assert_equal HubServiceRB::Keychain.public_key, wire['attestation']['serviceKey']
