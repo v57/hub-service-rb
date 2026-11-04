@@ -31,8 +31,7 @@ class TestVectors < Minitest::Test
 
   def test_auth_tokens
     auth = VECTORS['auth']
-    assert_equal auth['v0']['header'], Keychain.token(key('service'), auth['expiry'])
-    assert_equal auth['v1']['header'], Keychain.token(key('service'), auth['expiry'], KEYS['hub']['publicKey'])
+    assert_equal auth['v1']['header'], Keychain.token(key('service'), auth['expiry'], KEYS['hub']['publicKey'], auth['nonce'])
   end
 
   def test_certificates

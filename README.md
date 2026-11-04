@@ -26,7 +26,7 @@ client (repo has no gemspec, so it is wired via the sibling load path).
 
 ## Usage
 
-Start a hub first (hub-lite, listens on 1997), then:
+Start a hub first (hub-server, listens on 1997), then:
 
 ```ruby
 require 'hub_service_rb'
@@ -65,7 +65,9 @@ service.values('echo/values', 'x').each { |v| p v }
 ## API
 
 - `Service.new(options = {})` — `:address` (port or `ws://` URL; default
-  `1997` or `$HUB`), `:name`, `:icon` (string or `{symbol:, text:}`)
+  `1997` or `$HUB`), `:name`, `:icon` (string or `{symbol:, text:}`),
+  `:allow_plaintext`, `:sign` (custom token factory given the proven hub key
+  and the challenge)
 - `#post(path, settings = nil) { |body| ... }` — registers an endpoint; the
   block's return value is the response
 - `#stream(path, settings = nil) { |body| ... }` — registers a streaming
@@ -84,6 +86,7 @@ service.values('echo/values', 'x').each { |v| p v }
   (returns an enumerable)
 - `#start -> self` — connects; on every (re)connect sends
   `hub/profile/update` (if set) then `hub/service/update`
+- `#stop -> self` — disconnects, ending a wait for the hub's proof
 
 `settings` = `{ permissions: { group:, name:, allows: }, limit: }` — wire-parity
 fields hub-lite ignores; `group` auto-fills from the first path segment when
@@ -97,10 +100,17 @@ Element helpers (`lib/hub_service_rb/app.rb`): `text`, `progress`, `text_field`,
 
 - **Service key:** the `auth` file in the cwd (or `$HUBKEY`, TS layout), sent
   as a signed `auth` token on every connect.
-- **Hub key:** the first connect uses `v: 0` and calls `hub/info`; the hub key
-  is pinned in `hubs.json` beside the `auth` file and later connects sign
-  `hub1:<hub key>:<expiry>` with `v: 1`. hub-lite stays on v0. `:hub_key`
-  supplies it up front and `#forget_hub_key` clears the pin.
+- **Hub key:** before every connect the service asks `hub/info` with a fresh
+  nonce on a short anonymous connection. Only an answer with a valid proof of
+  the key it claims gets a token, signing `hub1:<hub key>:<challenge>:<expiry>`
+  with `v: 1`. The first proven key is pinned in `hubs.json` beside the `auth`
+  file. A hub that doesn't prove its key, or answers with another than the
+  pinned one, gets nothing and is reported (`#last_error`) while the service
+  keeps trying, so calls made right after `#start` wait instead of being lost.
+  `:hub_key` supplies it up front and `#forget_hub_key` clears the pin.
+- **Transport:** plain `ws://` beyond loopback, the overlay and the LAN isn't
+  dialed unless `:allow_plaintext` or `HUB_ALLOW_PLAINTEXT=1` says so;
+  `HubServiceRB.hub_transport_of(address)` classifies an address.
 - **Device:** a certificate signed by `~/.hub/device.key` (`HUB_DEVICE_KEY`
   overrides it) goes in the `device` header and is renewed with less than a
   day left. `:instance` sets the instance name and `device: false` turns

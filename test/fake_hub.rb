@@ -1,18 +1,44 @@
 # frozen_string_literal: true
 
+require 'base64'
+require 'json'
 require 'minitest'
 require 'socket'
 require 'hub_service_rb'
 
 # One in-process hub for the live tests: iodine runs a single runtime per
 # process and stopping a server stops it, so every test shares this one.
-# It records the headers of each connect and answers hub/info unless lite.
+# It records the headers of each connect and answers hub/info with a proof and
+# a fresh challenge per question, unless a test sets another answer.
 module FakeHub
-  HUB_KEY = 'MCowBQYDK2VwAyEAiojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w='
+  VECTORS = JSON.parse(File.read(File.expand_path('../../../Docs/Devices/vectors.json', __dir__)))
+  HUB_KEY = VECTORS['keys']['hub']['publicKey']
 
   class << self
-    attr_accessor :lite, :on_update
-    attr_reader :port
+    attr_accessor :answer, :on_update
+    attr_reader :port, :updates
+
+    # An answer that proves the key of a vector key.
+    def proving(name = 'hub')
+      bytes = HubServiceRB::Keychain.decode_key_file(VECTORS['keys'][name]['keyFile'])
+      public_key = VECTORS['keys'][name]['publicKey']
+      lambda do |nonce, challenge|
+        signed = HubServiceRB.hub_info_signed_data(public_key, nonce)
+        { key: public_key, protocol: 2, challenge: challenge,
+          proof: Base64.strict_encode64(HubServiceRB::Keychain.signing_key_for(bytes).sign(signed)) }
+      end
+    end
+
+    # The connects that carried credentials.
+    def credentials
+      headers.select { |h| h.key?('auth') || h.key?('device') }
+    end
+
+    def wait_updates(count, seconds = 5)
+      deadline = Time.now + seconds
+      sleep 0.02 while @updates < count && Time.now < deadline
+      raise "expected #{count} service updates, got #{@updates}" if @updates < count
+    end
 
     def headers
       @mutex.synchronize { @headers.dup }
@@ -28,8 +54,10 @@ module FakeHub
         @headers = []
         @replaced = []
       end
-      @lite = false
+      @answer = proving
       @on_update = nil
+      @updates = 0
+      @asked = 0
     end
 
     def start
@@ -41,12 +69,12 @@ module FakeHub
       @port = server.addr[1]
       server.close
       channel = ChannelRB::Channel.new
-      channel.post('hub/info') do
-        raise 'api not found' if FakeHub.lite
-
-        { key: HUB_KEY, protocol: 1, pro: true, mode: 'default-allow' }
+      channel.post('hub/info') do |payload|
+        @asked += 1
+        FakeHub.answer.call(payload[:body]['nonce'], "challenge-#{@asked}")
       end
       channel.post('hub/profile/update') { nil }
+      channel.post('test/echo') { |payload| payload[:body] }
       channel.post('network/shares/replace') do |payload|
         body = payload[:body]
         @mutex.synchronize { @replaced << body }
@@ -57,6 +85,7 @@ module FakeHub
         end }
       end
       channel.post('hub/service/update') do |payload|
+        @updates += 1
         callback = FakeHub.on_update
         Thread.new { callback.call(payload[:sender]) } if callback
         nil

@@ -6,6 +6,7 @@ require 'minitest/autorun'
 require 'tmpdir'
 
 require 'hub_service_rb'
+require_relative 'fake_hub'
 
 # Device key file and service certificates (protocol.md §3).
 class TestDevice < Minitest::Test
@@ -16,6 +17,8 @@ class TestDevice < Minitest::Test
     @saved = ENV['HUB_DEVICE_KEY']
     ENV['HUB_DEVICE_KEY'] = File.join(@dir, 'hub', 'device.key')
     HubServiceRB::Keychain.key_path = File.join(@dir, 'auth')
+    FakeHub.start
+    FakeHub.reset
   end
 
   def teardown
@@ -63,7 +66,7 @@ class TestDevice < Minitest::Test
   end
 
   def test_service_sends_device_header_for_its_key
-    service = HubServiceRB::Service.new(address: 1, instance: 'echo/main')
+    service = HubServiceRB::Service.new(address: FakeHub.port, instance: 'echo/main')
     headers = service.auth_headers
     body = decode(headers['device'])
     assert_equal HubServiceRB::Keychain.public_key, body['service']
@@ -93,7 +96,7 @@ class TestDevice < Minitest::Test
   end
 
   def test_device_mode_off_sends_no_header
-    refute HubServiceRB::Service.new(address: 1, device: false).auth_headers.key?('device')
+    refute HubServiceRB::Service.new(address: FakeHub.port, device: false).auth_headers.key?('device')
     refute File.exist?(File.join(@dir, 'hub'))
   end
 
@@ -101,7 +104,7 @@ class TestDevice < Minitest::Test
     blocked = File.join(@dir, 'blocked')
     File.write(blocked, 'not a directory')
     ENV['HUB_DEVICE_KEY'] = File.join(blocked, 'device.key')
-    headers = HubServiceRB::Service.new(address: 1).auth_headers
+    headers = HubServiceRB::Service.new(address: FakeHub.port).auth_headers
     refute headers.key?('device')
     assert headers['auth'].start_with?('key.')
   end

@@ -52,33 +52,35 @@ class TestKeychain < Minitest::Test
     # Reload from disk: same public key (file round-trip).
     HubServiceRB::Keychain.reset!
     assert_equal pub1, HubServiceRB::Keychain.public_key
-    assert_equal pub1, HubServiceRB::Keychain.sign.split('.')[1]
+    assert_equal pub1, HubServiceRB::Keychain.sign('hub-key', 'nonce').split('.')[1]
   end
 
   def test_token_shape_key_pub_sig_decimal
-    token = HubServiceRB::Keychain.sign
+    token = HubServiceRB::Keychain.sign('hub-key', 'nonce')
     parts = token.split('.')
-    assert_equal 4, parts.length, "token should be key.<pub>.<sig>.<expiry>: #{token}"
+    assert_equal 5, parts.length, "token should be key.<pub>.<sig>.<expiry>.<nonce>: #{token}"
     assert_equal 'key', parts[0]
     assert_match(/\A[A-Za-z0-9+\/=]+\z/, parts[1], 'pub must be base64')
     assert_equal 60, parts[1].bytesize, 'pub is base64 of the 44-byte SPKI DER'
     assert_match(/\A[A-Za-z0-9+\/=]+\z/, parts[2], 'sig must be base64')
     assert_equal 88, parts[2].bytesize, 'sig is base64 of the 64-byte ed25519 signature'
     assert_match(/\A\d+\z/, parts[3], 'expiry must be a decimal string')
-    assert_includes (Time.now.to_i + 58)..(Time.now.to_i + 62), parts[3].to_i
+    assert_includes (Time.now.to_i + 28)..(Time.now.to_i + 32), parts[3].to_i
+    assert_equal 'nonce', parts[4]
   end
 
   def test_signature_verifies_against_embedded_public_key
-    token = HubServiceRB::Keychain.sign
+    token = HubServiceRB::Keychain.sign('hub-key', 'nonce')
     _key, pub_b64, sig_b64, expiry = token.split('.')
     assert_equal HubServiceRB::Keychain.public_key, pub_b64
+    signed = "hub1:hub-key:nonce:#{expiry}"
 
     verify_key = Ed25519::VerifyKey.new(spki_raw_public_key(pub_b64))
     # The ed25519 gem raises on a bad signature rather than returning false.
-    assert verify_key.verify(Base64.strict_decode64(sig_b64), expiry),
-           'signature must verify over the expiry string with the token pub'
+    assert verify_key.verify(Base64.strict_decode64(sig_b64), signed),
+           'signature must verify over the signed string with the token pub'
     assert_raises(Ed25519::VerifyError) do
-      verify_key.verify(Base64.strict_decode64(sig_b64), "#{expiry}x")
+      verify_key.verify(Base64.strict_decode64(sig_b64), "#{signed}x")
     end
   end
 
@@ -89,16 +91,16 @@ class TestKeychain < Minitest::Test
     assert_equal TS_TEST_PUB, HubServiceRB::Keychain.public_key,
                  'must reproduce the TS keychain public key from its auth file'
 
-    token = HubServiceRB::Keychain.sign
+    token = HubServiceRB::Keychain.sign('hub-key', 'nonce')
     _key, pub_b64, sig_b64, expiry = token.split('.')
     assert_equal TS_TEST_PUB, pub_b64
     verify_key = Ed25519::VerifyKey.new(spki_raw_public_key(pub_b64))
-    assert verify_key.verify(Base64.strict_decode64(sig_b64), expiry),
+    assert verify_key.verify(Base64.strict_decode64(sig_b64), "hub1:hub-key:nonce:#{expiry}"),
            'token signed with the TS key must verify against the TS public key'
   end
 
   def test_sign_accepts_custom_expiry
-    token = HubServiceRB::Keychain.sign(60)
+    token = HubServiceRB::Keychain.sign('hub-key', 'nonce', 60)
     expiry = token.split('.')[3].to_i
     assert_includes (Time.now.to_i + 58)..(Time.now.to_i + 62), expiry
   end

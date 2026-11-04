@@ -1,10 +1,9 @@
 # frozen_string_literal: true
 
 # hub-service-rb: Ruby port of hub-service (TS reference).
-# Connects with hub-server auth (keychain + signed tokens) when available;
-# hub-lite ignores the auth headers entirely (regression-safe). Auth follows
-# Docs/Devices/protocol.md: v0 tokens until the hub key is pinned from
-# hub/info, hub-bound v1 tokens after that.
+# Connects with hub-server auth (keychain + signed tokens). Auth follows
+# Docs/Devices/protocol.md section 2: every (re)connect asks the hub to prove
+# its key and sends a fresh token for that answer alone (see hub_proof.rb).
 
 # channel-rb is a sibling checkout (no gemspec), wired via the monorepo layout.
 # If channel_rb is already available as a gem, the load path stays untouched.
@@ -13,10 +12,10 @@ unless $LOAD_PATH.any? { |p| p.end_with?('/channel-rb/lib') }
 end
 
 require 'thread'
-require 'timeout'
 require 'channel_rb'
 require 'hub_service_rb/app'
 require 'hub_service_rb/keychain'
+require 'hub_service_rb/hub_proof'
 require 'hub_service_rb/device'
 require 'hub_service_rb/request'
 require 'hub_service_rb/network'
@@ -25,17 +24,26 @@ module HubServiceRB
   # Raised when calling the hub before the service is started.
   class Error < StandardError; end
 
+  # Retry delays (seconds) for a hub that doesn't prove its key, or can't be reached.
+  HANDSHAKE_RETRY = 1
+  HANDSHAKE_MAX_RETRY = 30
+
   # Service registers API endpoints on a hub and serves calls forwarded by it.
   class Service
-    attr_reader :apps, :profile, :device, :network
+    # last_error: why the service isn't connected, if it knows: a refused
+    # address, or a hub that didn't prove its key or answers with another than
+    # the pinned one.
+    attr_reader :apps, :profile, :device, :network, :last_error
 
     # options: :address (port or ws:// URL; default 1997 or $HUB), :name, :icon
     # (string or {symbol:, text:}), :sign (callable returning a fresh hub-server
-    # auth token; default: the keychain +auth+ file in the cwd, TS parity. A
-    # callable that takes an argument gets the pinned hub key, or nil, and
-    # must sign v1 when it is set; one without arguments always sends v0),
-    # :hub_key (the hub's key when known up front; otherwise it is learned
-    # from hub/info and pinned), :instance (this service's name on its
+    # auth token; default: the keychain +auth+ file in the cwd, TS parity. It
+    # gets the key the hub proved and the challenge of this connect, and runs
+    # only after the proof), :hub_key (the hub's key when known up front;
+    # otherwise the first key a hub proves is pinned), :allow_plaintext (dial
+    # plain ws:// beyond loopback, the overlay and the LAN, which would carry
+    # the key unencrypted: for private networks the SDK can't recognize, such
+    # as a container's ws://hub:1997; also HUB_ALLOW_PLAINTEXT=1), :instance (this service's name on its
     # device, unique per device; default: HUB_INSTANCE, else :name, else the
     # cwd name, else 'service'), :device (true, the
     # default, certifies the service with this device's key when it can be
@@ -46,8 +54,8 @@ module HubServiceRB
       hub = ENV['HUB']
       hub = hub&.match?(/\A\d+\z/) ? hub.to_i : hub
       @address = options[:address] || hub || 1997
-      @sign = options[:sign] || ->(hub_key = nil) { HubServiceRB::Keychain.sign(hub_key: hub_key) }
-      @sign_takes_hub_key = @sign.arity != 0
+      @sign = options[:sign] || ->(hub_key, nonce) { HubServiceRB::Keychain.sign(hub_key, nonce) }
+      @allow_plaintext = options[:allow_plaintext] || ENV['HUB_ALLOW_PLAINTEXT'] == '1'
       @hub_key = options[:hub_key]
       @instance = options[:instance]
       device = options.fetch(:device, true)
@@ -111,16 +119,48 @@ module HubServiceRB
     # Connect to the hub. On every (re)connect: hub/profile/update (if a
     # profile is set), then hub/service/update with the current services+apps
     # (the hub drops a sender's services on disconnect). Each (re)connect
-    # also carries fresh hub-server auth headers ({auth: <signed token>, v: '0'})
-    # — the client URL-encodes them as query params on the ws:// handshake.
+    # first asks the hub to prove its key (see #auth_headers). A plain ws://
+    # address beyond loopback, the overlay and the LAN isn't dialed.
     def start
       @mutex.synchronize do
         return self if @sender
 
+        @last_error = nil
+        # channel-rb only knows ws:// and wss://: it would turn these into a plain ws:// address.
+        if @address.to_s.match?(%r{\A(https|quic)://}i)
+          @last_error = "#{target} would carry this service's key unencrypted: this client only encrypts wss://"
+          warn "hub-service: #{@last_error}"
+          return self
+        end
+        if !@allow_plaintext && HubServiceRB.hub_transport_of(@address) == 'refused'
+          @last_error = "#{target} would carry this service's key unencrypted. Use wss://, " \
+                        'or set :allow_plaintext (HUB_ALLOW_PLAINTEXT=1) on a private network'
+          warn "hub-service: #{@last_error}"
+          return self
+        end
+        # The client asks for headers on this thread first, then on a reconnect
+        # thread of its own, and retries when they raise. Asking the hub can
+        # take a while, so this first attempt goes straight to such a thread.
+        starter = Thread.current
         @sender = @channel.connect(@address,
                                    on_connect: proc { |s| send_updates(s) },
-                                   headers: -> { auth_headers })
+                                   headers: lambda {
+                                     raise Error, 'not on the caller of start' if Thread.current == starter
+
+                                     auth_headers
+                                   })
       end
+      self
+    end
+
+    # Disconnect from the hub, ending a wait for its proof.
+    def stop
+      sender = @mutex.synchronize do
+        current = @sender
+        @sender = nil
+        current
+      end
+      sender&.stop
       self
     end
 
@@ -144,8 +184,9 @@ module HubServiceRB
       HubPins.new(File.join(File.dirname(HubServiceRB::Keychain.key_path), 'hubs.json'))
     end
 
-    # The hub key this service signs for: supplied, else pinned. The pin is
-    # read from hubs.json at each connect and kept in memory.
+    # The hub key this service expects: supplied, else pinned, else nil until a
+    # hub proved one. The pin is read from hubs.json at each connect and kept
+    # in memory.
     def hub_key
       return @hub_key if @hub_key
 
@@ -156,34 +197,41 @@ module HubServiceRB
       @pinned
     end
 
-    # Clear the pinned hub key; the next connect learns it again (v0).
+    # Clear the pinned hub key; the next connect pins what the hub proves.
     def forget_hub_key
       @hub_key = nil
       @pinned = nil
       pins.forget(target)
     end
 
-    # Fresh hub-server auth headers for every (re)connect: a freshly signed
-    # token + protocol version. The channel client calls this once per
-    # connection attempt (initial + reconnects) and sends them as real
-    # WebSocket handshake headers (never in the URL). hub-lite ignores them.
-    # A refused v1 connect (the hub key changed or a different server
-    # answers) keeps retrying with v1; there is no silent v0 fallback.
+    # Runs before every connection attempt (protocol.md section 2), on the
+    # client's reconnect thread. It comes back with a token over a fresh
+    # challenge from a hub that proved its key; until one has, it holds the
+    # attempt back, so nothing goes out and requests keep waiting. After a stop
+    # it raises, which tells the client not to connect.
     def auth_headers
-      @pin_loaded = false # pick up a pin another process wrote
-      key = @sign_takes_hub_key ? hub_key : nil
-      token = (@sign_takes_hub_key ? @sign.call(key) : @sign.call).to_s
-      headers = { 'auth' => token, 'v' => key ? '1' : '0' }
-      @service_key = token.split('.')[1]
-      if @device
+      client = @sender&.ws
+      delay = HANDSHAKE_RETRY
+      reported = nil
+      loop do
         begin
-          # The certificate names the key in the token, whoever signed it.
-          headers['device'] = @device.certificate(token.split('.')[1], instance)
-        rescue StandardError
-          nil # no readable or creatable device key: a plain key connection
+          headers = handshake
+          raise Error, 'stopped' if client && !client.running?
+
+          @last_error = nil
+          return headers
+        rescue StandardError => e
+          raise if client && !client.running?
+
+          @last_error = e.message
+          if @last_error != reported
+            reported = @last_error
+            warn "hub-service: #{reported}"
+          end
         end
+        wait_for_retry(client, delay)
+        delay = [delay * 2, HANDSHAKE_MAX_RETRY].min
       end
-      headers
     end
 
     # The key this service connects with (the key in its auth token).
@@ -257,16 +305,53 @@ module HubServiceRB
 
     def sender
       @mutex.synchronize do
-        raise Error, 'Service not started' unless @sender
+        raise Error, @last_error || 'Service not started' unless @sender
 
         @sender
       end
     end
 
+    # Asks the hub for its proof and signs for that answer alone.
+    def handshake
+      begin
+        proof = HubServiceRB.ask_hub(@address)
+      rescue StandardError => e
+        raise Error, "#{target}: #{e.message}, sending it nothing"
+      end
+      @pin_loaded = false # pick up a pin another process wrote
+      pinned = hub_key
+      if pinned.nil?
+        pins.set(target, proof.key)
+        @pinned = proof.key
+        @pin_loaded = true
+      elsif pinned != proof.key
+        raise Error, "#{target} answers with key #{proof.key}, not the pinned #{pinned}, sending it nothing. " \
+                     '#forget_hub_key if its key really changed'
+      end
+      token = @sign.call(proof.key, proof.challenge).to_s
+      headers = { 'auth' => token, 'v' => HubServiceRB::Keychain::AUTH_VERSION }
+      @service_key = token.split('.')[1]
+      if @device
+        begin
+          # The certificate names the key in the token, whoever signed it.
+          headers['device'] = @device.certificate(token.split('.')[1], instance)
+        rescue StandardError
+          nil # no readable or creatable device key: a plain key connection
+        end
+      end
+      headers
+    end
+
+    # Sleeps until the next attempt, waking up soon after a stop.
+    def wait_for_retry(client, delay)
+      deadline = Time.now + delay
+      sleep 0.05 while Time.now < deadline && (client.nil? || client.running?)
+      raise Error, 'stopped' if client && !client.running?
+    end
+
     def send_updates(s)
       send_untracked(s, 'hub/profile/update', @profile) if @profile
       send_untracked(s, 'hub/service/update', update)
-      learn_hub_key(s) if @sign_takes_hub_key && hub_key.nil?
       republish(s) if @network.shares?
     end
 
@@ -285,27 +370,6 @@ module HubServiceRB
     def share_hash(name, protocol, host, port, policy)
       { 'name' => name, 'protocol' => protocol.to_s, 'target' => { 'host' => host, 'port' => port },
         'policy' => policy ? JSON.parse(JSON.generate(policy)) : { 'mode' => 'private' } }
-    end
-
-    # Pin the hub key from hub/info, then reconnect with v1 at once. Runs on
-    # its own thread: on_connect is on the iodine loop, where waiting for a
-    # response would deadlock. hub-lite doesn't answer hub/info, so the
-    # service stays on v0 there.
-    def learn_hub_key(s)
-      Thread.new do
-        begin
-          info = Timeout.timeout(10) { s.send('hub/info') }
-          key = info.is_a?(Hash) ? (info['key'] || info[:key]) : nil
-          if key.is_a?(String) && !key.empty? && hub_key.nil?
-            pins.set(target, key)
-            @pinned = key
-            @pin_loaded = true
-            @sender&.ws&.instance_variable_get(:@connection)&.close
-          end
-        rescue StandardError, Timeout::Error
-          nil
-        end
-      end
     end
 
     # Fire-and-forget send. on_connect runs on the iodine event-loop thread,

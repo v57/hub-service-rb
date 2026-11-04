@@ -18,20 +18,19 @@ module HubServiceRB
   #   keychain) is the base64 encoding of the 48-byte PKCS8 DER ed25519
   #   private key followed by the 44-byte SPKI DER public key (92 bytes
   #   total, 124 base64 chars).
-  # - A signed token has the shape +key.<pub>.<sig>.<expiry>+ where:
+  # - A signed token has the shape +key.<pub>.<sig>.<expiry>.<nonce>+ where:
   #     pub     = base64 of the 44-byte SPKI public key (bytes 48..92)
-  #     sig     = base64 ed25519 signature over the signed data
-  #     expiry  = DECIMAL epoch-seconds string of now + 60 (protocol
-  #               default; hub-server rejects it once expired or over 5
-  #               minutes ahead)
-  # - The signed data depends on the +v+ header (Docs/Devices/protocol.md):
-  #     v: 0    the expiry string alone
-  #     v: 1    +hub1:<hub key>:<expiry>+, so the token only works on the
-  #             hub whose key it names
+  #     sig     = base64 ed25519 signature of +hub1:<hub key>:<nonce>:<expiry>+
+  #     expiry  = DECIMAL epoch-seconds string of now + 30 (protocol
+  #               default; hub-server rejects it once expired or over a
+  #               minute ahead)
+  #     nonce   = the challenge the hub answered in +hub/info+, so the token
+  #               works once, on the hub whose key it names
+  #               (Docs/Devices/protocol.md section 2)
   # - The hub verifies the signature against the embedded public key and
   #   treats the key as the connection identity (owner/host/group).
-  # - Hub keys learned from +hub/info+ are pinned in +hubs.json+ beside the
-  #   key file: +{"<address>": "<hub SPKI>"}+ (see HubPins).
+  # - Hub keys proved in +hub/info+ are pinned in +hubs.json+ beside the key
+  #   file: +{"<address>": "<hub SPKI>"}+ (see HubPins).
   #
   # Crypto backend: system ruby's openssl stdlib (LibreSSL) has no
   # OpenSSL::PKey::ED25519, so signing uses the RubyCrypto +ed25519+ gem
@@ -42,6 +41,8 @@ module HubServiceRB
     # followed by the SPKI DER public key (44 bytes for ed25519).
     PRIVATE_DER_LENGTH = 48
     PUBLIC_DER_LENGTH = 44
+    # Sent as the +v+ header next to +auth+.
+    AUTH_VERSION = '1'
 
     # Fixed DER prefixes for ed25519 keys (RFC 8410):
     # PKCS8: SEQUENCE { INTEGER 0, SEQUENCE { OID 1.3.101.112 },
@@ -66,11 +67,10 @@ module HubServiceRB
         Base64.strict_encode64(public_der)
       end
 
-      # A fresh auth token: +key.<pub>.<sig>.<expiry>+. With +hub_key+ (the
-      # pinned hub key) it signs +hub1:<hub key>:<expiry>+ for +v: 1+;
-      # without it the token is v0 (the expiry alone).
-      def sign(expires = 60, hub_key: nil)
-        token(key_bytes, Time.now.to_i + expires, hub_key)
+      # A fresh auth token for one connection to the hub with key +hub_key+,
+      # over the challenge it answered in +hub/info+.
+      def sign(hub_key, nonce, expires = 30)
+        token(key_bytes, Time.now.to_i + expires, hub_key, nonce)
       end
 
       # The base64 signature of +data+ with the service key (agent challenges
@@ -79,11 +79,11 @@ module HubServiceRB
         Base64.strict_encode64(signing_key_for(key_bytes).sign(data))
       end
 
-      # An auth token for an exact expiry from key file bytes.
-      def token(bytes, expiry, hub_key = nil)
-        data = hub_key ? "hub1:#{hub_key}:#{expiry}" : expiry.to_s
-        signature = signing_key_for(bytes).sign(data)
-        "key.#{spki(bytes)}.#{Base64.strict_encode64(signature)}.#{expiry}"
+      # An auth token for an exact expiry, one hub and one challenge, from key
+      # file bytes.
+      def token(bytes, expiry, hub_key, nonce)
+        signature = signing_key_for(bytes).sign("hub1:#{hub_key}:#{nonce}:#{expiry}")
+        "key.#{spki(bytes)}.#{Base64.strict_encode64(signature)}.#{expiry}.#{nonce}"
       end
 
       # The public half of key file bytes: base64 of the 44-byte SPKI DER.
