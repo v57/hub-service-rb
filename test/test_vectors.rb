@@ -26,7 +26,9 @@ class TestVectors < Minitest::Test
 
   def test_device_id_and_safety_code
     assert_equal KEYS['device']['deviceId'], Device.device_id(KEYS['device']['publicKey'])
-    assert_equal KEYS['device']['safetyCode'], Device.safety_code(KEYS['device']['publicKey'])
+    VECTORS['safetyCode']['cases'].each do |code|
+      assert_equal code['code'], Device.safety_code(code['hubKey'], code['deviceKey'], code['codeValue'])
+    end
   end
 
   def test_auth_tokens

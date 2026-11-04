@@ -42,9 +42,10 @@ module HubServiceRB
         Digest::SHA256.hexdigest(Base64.strict_decode64(public_key))[0, 32]
       end
 
-      # The code shown on both sides when approving a device: +"ddd ddd"+.
-      def safety_code(public_key)
-        n = Digest::SHA256.hexdigest(Base64.strict_decode64(public_key))[0, 8].to_i(16) % 1_000_000
+      # The code shown on both sides when approving a device: +"ddd ddd"+. +hub_key+ is the key this side pinned,
+      # +code_value+ what the hub picked after it had the device's key (hub/device/request).
+      def safety_code(hub_key, public_key, code_value)
+        n = Digest::SHA256.hexdigest("hubcode1:#{hub_key}:#{public_key}:#{code_value}")[0, 8].to_i(16) % 1_000_000
         format('%03d %03d', n / 1000, n % 1000)
       end
 
@@ -129,8 +130,8 @@ module HubServiceRB
       self.class.device_id(public_key)
     end
 
-    def safety_code
-      self.class.safety_code(public_key)
+    def safety_code(hub_key, code_value)
+      self.class.safety_code(hub_key, public_key, code_value)
     end
 
     # The certificate for a service key, renewed with < 24 h left.
