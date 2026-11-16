@@ -13,16 +13,20 @@ The wire contract matches the TS reference (`hub/profile/update`,
 
 ## Install
 
+Not published as a gem. `lib/hub_service_rb.rb` loads [channel-rb](https://github.com/v57/channel-rb) (no
+gemspec either) from `../../Channel/channel-rb/lib`, so clone both into the Hub layout:
+
 ```bash
-# sibling checkout of channel-rb (monorepo layout):
-git clone https://github.com/v57/channel-rb
-git clone https://github.com/v57/hub-service-rb
-cd hub-service-rb
-bundle install --path vendor/bundle
+mkdir -p Hub/Channel Hub/HubService
+git clone https://github.com/v57/channel-rb Hub/Channel/channel-rb
+git clone https://github.com/v57/hub-service-rb Hub/HubService/hub-service-rb
+cd Hub/HubService/hub-service-rb
+bundle config set --local path vendor/bundle
+bundle install
 ```
 
-`hub-service-rb` depends on the [channel-rb](https://github.com/v57/channel-rb)
-client (repo has no gemspec, so it is wired via the sibling load path).
+The Gemfile lists channel-rb's gems (oj, iodine) as well as this port's. When `channel_rb` is already on the load
+path (a path ending in `/channel-rb/lib`), the sibling folder isn't needed.
 
 ## Usage
 
